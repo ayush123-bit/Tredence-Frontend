@@ -15,8 +15,20 @@ const CodeEditor: React.FC = () => {
   
   const [wsService, setWsService] = useState<WebSocketService | null>(null)
   const [connectedUsers, setConnectedUsers] = useState(1)
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
+  const [showMobileMenu, setShowMobileMenu] = useState(false)
+  const [editorReady, setEditorReady] = useState(false)
   const autocompleteTimeoutRef = useRef<number | null>(null)
+  const isRemoteUpdateRef = useRef(false)
 
+  // Handle window resize for responsive design
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobile(window.innerWidth < 768)
+    }
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [])
 
   useEffect(() => {
     if (!roomId) return
@@ -27,8 +39,9 @@ const CodeEditor: React.FC = () => {
         dispatch(setCode(room.code))
         dispatch(setRoomId(room.room_id))
       })
-      .catch(() => {
-        alert('Room not found')
+      .catch((error) => {
+        console.error('Failed to fetch room:', error)
+        alert('Room not found. Please check the room ID.')
         navigate('/')
       })
 
@@ -38,12 +51,16 @@ const CodeEditor: React.FC = () => {
     setWsService(ws)
 
     return () => {
+      if (autocompleteTimeoutRef.current) {
+        clearTimeout(autocompleteTimeoutRef.current)
+      }
       ws.disconnect()
     }
-  }, [roomId])
+  }, [roomId, dispatch, navigate])
 
   const handleWebSocketMessage = (data: any) => {
     if (data.type === 'code_update') {
+      isRemoteUpdateRef.current = true
       dispatch(setCode(data.content))
     } else if (data.type === 'user_joined') {
       setConnectedUsers(prev => prev + 1)
@@ -55,6 +72,12 @@ const CodeEditor: React.FC = () => {
   const handleCodeChange = (value: string | undefined) => {
     if (value === undefined) return
     
+    // If this is a remote update, don't send it back
+    if (isRemoteUpdateRef.current) {
+      isRemoteUpdateRef.current = false
+      return
+    }
+    
     dispatch(setCode(value))
     
     // Send update via WebSocket
@@ -62,17 +85,22 @@ const CodeEditor: React.FC = () => {
       wsService.sendMessage('code_update', value)
     }
 
-    // Trigger autocomplete after 600ms of inactivity
+    // Clear previous timeout
     if (autocompleteTimeoutRef.current) {
       clearTimeout(autocompleteTimeoutRef.current)
     }
 
+    // Trigger autocomplete after 600ms of inactivity
     autocompleteTimeoutRef.current = setTimeout(() => {
       fetchAutocomplete(value)
     }, 600)
   }
 
   const fetchAutocomplete = async (currentCode: string) => {
+    if (!currentCode || currentCode.length < 3) {
+      return
+    }
+
     try {
       const result = await api.getAutocomplete({
         code: currentCode,
@@ -80,74 +108,259 @@ const CodeEditor: React.FC = () => {
         language: 'python'
       })
       
-      if (result.confidence > 0.6) {
+      if (result && result.confidence > 0.6) {
         dispatch(setAutocompleteSuggestion(result.suggestion))
-        setTimeout(() => dispatch(setAutocompleteSuggestion(null)), 3000)
+        // Auto-hide after 5 seconds
+        setTimeout(() => {
+          dispatch(setAutocompleteSuggestion(null))
+        }, 5000)
       }
     } catch (error) {
       console.error('Autocomplete error:', error)
+      // Don't show error to user, just log it
+    }
+  }
+
+  const copyRoomId = () => {
+    if (roomId) {
+      navigator.clipboard.writeText(roomId)
+        .then(() => alert('Room ID copied to clipboard!'))
+        .catch(() => alert(`Room ID: ${roomId}`))
     }
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
+    <div style={{ 
+      display: 'flex', 
+      flexDirection: 'column', 
+      height: '100vh',
+      overflow: 'hidden'
+    }}>
+      {/* Header */}
       <div style={{
         background: '#1e293b',
-        padding: '16px 24px',
+        padding: isMobile ? '12px 16px' : '16px 24px',
         display: 'flex',
         justifyContent: 'space-between',
         alignItems: 'center',
-        color: 'white'
+        color: 'white',
+        flexWrap: isMobile ? 'wrap' : 'nowrap',
+        gap: '12px'
       }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: '20px' }}>Room: {roomId}</h2>
-          <p style={{ margin: '4px 0 0 0', fontSize: '14px', color: '#94a3b8' }}>
+        <div style={{ flex: 1, minWidth: isMobile ? '100%' : 'auto' }}>
+          <h2 style={{ 
+            margin: 0, 
+            fontSize: isMobile ? '16px' : '20px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            flexWrap: 'wrap'
+          }}>
+            <span>Room: {roomId}</span>
+            {roomId && (
+              <button
+                onClick={copyRoomId}
+                style={{
+                  background: 'rgba(255, 255, 255, 0.1)',
+                  border: '1px solid rgba(255, 255, 255, 0.2)',
+                  color: 'white',
+                  padding: '4px 12px',
+                  borderRadius: '6px',
+                  fontSize: '12px',
+                  cursor: 'pointer',
+                  transition: 'background 0.2s'
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(255, 255, 255, 0.2)'}
+                onMouseLeave={(e) => e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)'}
+              >
+                📋 Copy
+              </button>
+            )}
+          </h2>
+          <p style={{ 
+            margin: '4px 0 0 0', 
+            fontSize: isMobile ? '12px' : '14px', 
+            color: '#94a3b8' 
+          }}>
             {connectedUsers} user{connectedUsers !== 1 ? 's' : ''} connected
           </p>
         </div>
-        <button
-          onClick={() => navigate('/')}
-          style={{
-            padding: '10px 20px',
-            background: '#ef4444',
-            color: 'white',
-            border: 'none',
-            borderRadius: '8px',
-            cursor: 'pointer',
-            fontWeight: '600'
-          }}
-        >
-          Leave Room
-        </button>
+        
+        {/* Mobile menu button */}
+        {isMobile && (
+          <button
+            onClick={() => setShowMobileMenu(!showMobileMenu)}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: 'white',
+              fontSize: '24px',
+              cursor: 'pointer',
+              padding: '8px'
+            }}
+          >
+            ☰
+          </button>
+        )}
+
+        {/* Desktop leave button */}
+        {!isMobile && (
+          <button
+            onClick={() => navigate('/')}
+            style={{
+              padding: '10px 20px',
+              background: '#ef4444',
+              color: 'white',
+              border: 'none',
+              borderRadius: '8px',
+              cursor: 'pointer',
+              fontWeight: '600',
+              fontSize: '14px',
+              transition: 'background 0.2s',
+              whiteSpace: 'nowrap'
+            }}
+            onMouseEnter={(e) => e.currentTarget.style.background = '#dc2626'}
+            onMouseLeave={(e) => e.currentTarget.style.background = '#ef4444'}
+          >
+            Leave Room
+          </button>
+        )}
       </div>
 
-      {autocompleteSuggestion && (
+      {/* Mobile menu dropdown */}
+      {isMobile && showMobileMenu && (
         <div style={{
-          background: '#fef3c7',
-          padding: '12px 24px',
-          borderBottom: '1px solid #fbbf24',
-          color: '#92400e',
-          fontSize: '14px'
+          background: '#334155',
+          padding: '12px 16px',
+          borderBottom: '1px solid #475569'
         }}>
-          💡 Suggestion: {autocompleteSuggestion}
+          <button
+            onClick={() => {
+              navigate('/')
+              setShowMobileMenu(false)
+            }}
+            style={{
+              width: '100%',
+              padding: '12px',
+              background: '#ef4444',
+              color: 'white',
+              border: 'none',
+              borderRadius: '8px',
+              cursor: 'pointer',
+              fontWeight: '600',
+              fontSize: '14px'
+            }}
+          >
+            Leave Room
+          </button>
         </div>
       )}
 
-      <div style={{ flex: 1 }}>
+      {/* Autocomplete suggestion banner */}
+      {autocompleteSuggestion && (
+        <div style={{
+          background: '#fef3c7',
+          padding: isMobile ? '10px 16px' : '12px 24px',
+          borderBottom: '1px solid #fbbf24',
+          color: '#92400e',
+          fontSize: isMobile ? '12px' : '14px',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'flex-start',
+          gap: '12px',
+          maxHeight: isMobile ? '80px' : '100px',
+          overflow: 'auto'
+        }}>
+          <div style={{ flex: 1 }}>
+            <strong>💡 Suggestion:</strong>
+            <pre style={{ 
+              margin: '4px 0 0 0', 
+              fontFamily: 'monospace',
+              fontSize: isMobile ? '11px' : '13px',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word'
+            }}>
+              {autocompleteSuggestion}
+            </pre>
+          </div>
+          <button
+            onClick={() => dispatch(setAutocompleteSuggestion(null))}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: '#92400e',
+              cursor: 'pointer',
+              fontSize: '18px',
+              padding: '0',
+              lineHeight: '1',
+              flexShrink: 0
+            }}
+          >
+            ×
+          </button>
+        </div>
+      )}
+
+      {/* Loading state */}
+      {!editorReady && (
+        <div style={{
+          position: 'absolute',
+          top: '50%',
+          left: '50%',
+          transform: 'translate(-50%, -50%)',
+          color: '#64748b',
+          fontSize: '16px',
+          textAlign: 'center',
+          zIndex: 10
+        }}>
+          Loading editor...
+        </div>
+      )}
+
+      {/* Monaco Editor */}
+      <div style={{ flex: 1, overflow: 'hidden' }}>
         <Editor
           height="100%"
           defaultLanguage="python"
           value={code}
           onChange={handleCodeChange}
+          onMount={() => setEditorReady(true)}
           theme="vs-dark"
           options={{
-            fontSize: 14,
-            minimap: { enabled: false },
+            fontSize: isMobile ? 12 : 14,
+            minimap: { enabled: !isMobile },
             scrollBeyondLastLine: false,
-            automaticLayout: true
+            automaticLayout: true,
+            wordWrap: isMobile ? 'on' : 'off',
+            lineNumbers: isMobile ? 'off' : 'on',
+            glyphMargin: !isMobile,
+            folding: !isMobile,
+            lineDecorationsWidth: isMobile ? 0 : undefined,
+            lineNumbersMinChars: isMobile ? 0 : 3,
+            readOnly: false,
+            scrollbar: {
+              vertical: 'auto',
+              horizontal: 'auto',
+              verticalScrollbarSize: isMobile ? 8 : 10,
+              horizontalScrollbarSize: isMobile ? 8 : 10
+            }
           }}
         />
       </div>
+
+      {/* Mobile footer with helpful info */}
+      {isMobile && (
+        <div style={{
+          background: '#1e293b',
+          padding: '8px 16px',
+          color: '#94a3b8',
+          fontSize: '11px',
+          textAlign: 'center',
+          borderTop: '1px solid #334155'
+        }}>
+          Tap ☰ menu to leave • {connectedUsers} connected
+        </div>
+      )}
     </div>
   )
 }
