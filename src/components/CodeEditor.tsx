@@ -18,8 +18,9 @@ const CodeEditor: React.FC = () => {
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
   const [showMobileMenu, setShowMobileMenu] = useState(false)
   const [editorReady, setEditorReady] = useState(false)
-  const autocompleteTimeoutRef = useRef<number | null>(null)
+  const autocompleteTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isRemoteUpdateRef = useRef(false)
+  const editorRef = useRef<any>(null)
 
   // Handle window resize for responsive design
   useEffect(() => {
@@ -56,7 +57,7 @@ const CodeEditor: React.FC = () => {
       }
       ws.disconnect()
     }
-  }, [roomId, dispatch, navigate])
+  }, [roomId])
 
   const handleWebSocketMessage = (data: any) => {
     if (data.type === 'code_update') {
@@ -72,7 +73,7 @@ const CodeEditor: React.FC = () => {
   const handleCodeChange = (value: string | undefined) => {
     if (value === undefined) return
     
-    // If this is a remote update, don't send it back
+    // If this is a remote update, don't send it back or trigger autocomplete
     if (isRemoteUpdateRef.current) {
       isRemoteUpdateRef.current = false
       return
@@ -85,7 +86,7 @@ const CodeEditor: React.FC = () => {
       wsService.sendMessage('code_update', value)
     }
 
-    // Clear previous timeout
+    // Clear previous autocomplete timeout
     if (autocompleteTimeoutRef.current) {
       clearTimeout(autocompleteTimeoutRef.current)
     }
@@ -97,36 +98,62 @@ const CodeEditor: React.FC = () => {
   }
 
   const fetchAutocomplete = async (currentCode: string) => {
-    if (!currentCode || currentCode.length < 3) {
+    // Don't fetch if code is too short
+    if (!currentCode || currentCode.trim().length < 2) {
       return
     }
 
     try {
+      console.log('Fetching autocomplete for:', currentCode.substring(0, 50) + '...')
+      
+      // Get cursor position from editor if available
+      let cursorPos = currentCode.length
+      if (editorRef.current) {
+        const position = editorRef.current.getPosition()
+        const model = editorRef.current.getModel()
+        if (position && model) {
+          cursorPos = model.getOffsetAt(position)
+        }
+      }
+
       const result = await api.getAutocomplete({
         code: currentCode,
-        cursor_position: currentCode.length,
+        cursor_position: cursorPos,
         language: 'python'
       })
       
-      if (result && result.confidence > 0.6) {
+      console.log('Autocomplete result:', result)
+      
+      if (result && result.suggestion && result.confidence > 0.5) {
         dispatch(setAutocompleteSuggestion(result.suggestion))
-        // Auto-hide after 5 seconds
+        
+        // Auto-hide after 6 seconds
         setTimeout(() => {
           dispatch(setAutocompleteSuggestion(null))
-        }, 5000)
+        }, 6000)
       }
     } catch (error) {
       console.error('Autocomplete error:', error)
-      // Don't show error to user, just log it
+      // Silent fail - don't show error to user
     }
   }
 
   const copyRoomId = () => {
     if (roomId) {
-      navigator.clipboard.writeText(roomId)
-        .then(() => alert('Room ID copied to clipboard!'))
-        .catch(() => alert(`Room ID: ${roomId}`))
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(roomId)
+          .then(() => alert('Room ID copied to clipboard!'))
+          .catch(() => alert(`Room ID: ${roomId}`))
+      } else {
+        // Fallback for older browsers
+        alert(`Room ID: ${roomId}`)
+      }
     }
+  }
+
+  const handleEditorDidMount = (editor: any, monaco: any) => {
+    editorRef.current = editor
+    setEditorReady(true)
   }
 
   return (
@@ -134,7 +161,8 @@ const CodeEditor: React.FC = () => {
       display: 'flex', 
       flexDirection: 'column', 
       height: '100vh',
-      overflow: 'hidden'
+      overflow: 'hidden',
+      width: '100%'
     }}>
       {/* Header */}
       <div style={{
@@ -144,10 +172,14 @@ const CodeEditor: React.FC = () => {
         justifyContent: 'space-between',
         alignItems: 'center',
         color: 'white',
-        flexWrap: isMobile ? 'wrap' : 'nowrap',
-        gap: '12px'
+        flexWrap: 'wrap',
+        gap: '12px',
+        boxSizing: 'border-box'
       }}>
-        <div style={{ flex: 1, minWidth: isMobile ? '100%' : 'auto' }}>
+        <div style={{ 
+          flex: isMobile ? '1 1 100%' : '1',
+          minWidth: isMobile ? '100%' : 'auto' 
+        }}>
           <h2 style={{ 
             margin: 0, 
             fontSize: isMobile ? '16px' : '20px',
@@ -268,17 +300,21 @@ const CodeEditor: React.FC = () => {
           justifyContent: 'space-between',
           alignItems: 'flex-start',
           gap: '12px',
-          maxHeight: isMobile ? '80px' : '100px',
-          overflow: 'auto'
+          maxHeight: isMobile ? '120px' : '150px',
+          overflow: 'auto',
+          boxSizing: 'border-box'
         }}>
-          <div style={{ flex: 1 }}>
-            <strong>💡 Suggestion:</strong>
+          <div style={{ flex: 1, overflow: 'auto' }}>
+            <strong>💡 AI Suggestion:</strong>
             <pre style={{ 
               margin: '4px 0 0 0', 
               fontFamily: 'monospace',
               fontSize: isMobile ? '11px' : '13px',
               whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word'
+              wordBreak: 'break-word',
+              background: 'rgba(251, 191, 36, 0.1)',
+              padding: '8px',
+              borderRadius: '4px'
             }}>
               {autocompleteSuggestion}
             </pre>
@@ -290,13 +326,14 @@ const CodeEditor: React.FC = () => {
               border: 'none',
               color: '#92400e',
               cursor: 'pointer',
-              fontSize: '18px',
-              padding: '0',
+              fontSize: '20px',
+              padding: '0 4px',
               lineHeight: '1',
-              flexShrink: 0
+              flexShrink: 0,
+              fontWeight: 'bold'
             }}
           >
-            ×
+            ✕
           </button>
         </div>
       )}
@@ -309,7 +346,7 @@ const CodeEditor: React.FC = () => {
           left: '50%',
           transform: 'translate(-50%, -50%)',
           color: '#64748b',
-          fontSize: '16px',
+          fontSize: isMobile ? '14px' : '16px',
           textAlign: 'center',
           zIndex: 10
         }}>
@@ -318,13 +355,18 @@ const CodeEditor: React.FC = () => {
       )}
 
       {/* Monaco Editor */}
-      <div style={{ flex: 1, overflow: 'hidden' }}>
+      <div style={{ 
+        flex: 1, 
+        overflow: 'hidden',
+        width: '100%',
+        boxSizing: 'border-box'
+      }}>
         <Editor
           height="100%"
           defaultLanguage="python"
           value={code}
           onChange={handleCodeChange}
-          onMount={() => setEditorReady(true)}
+          onMount={handleEditorDidMount}
           theme="vs-dark"
           options={{
             fontSize: isMobile ? 12 : 14,
@@ -343,6 +385,10 @@ const CodeEditor: React.FC = () => {
               horizontal: 'auto',
               verticalScrollbarSize: isMobile ? 8 : 10,
               horizontalScrollbarSize: isMobile ? 8 : 10
+            },
+            padding: {
+              top: isMobile ? 8 : 16,
+              bottom: isMobile ? 8 : 16
             }
           }}
         />
